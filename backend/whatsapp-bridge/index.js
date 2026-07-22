@@ -5,6 +5,24 @@
  * Exposes REST API + WebSocket for the FastAPI backend.
  */
 
+// Baileys does `const { subtle } = globalThis.crypto` at import time.
+// Official Node 19+ exposes this globally; Debian/apt Node 18 does not.
+// Polyfill from the built-in webcrypto export before Baileys is loaded.
+(() => {
+  const { webcrypto } = require("crypto");
+  if (!webcrypto?.subtle) {
+    console.error("[WA] Web Crypto API unavailable — use Node.js 20+");
+    process.exit(1);
+  }
+  if (!globalThis.crypto?.subtle) {
+    Object.defineProperty(globalThis, "crypto", {
+      value: webcrypto,
+      configurable: true,
+      writable: true,
+    });
+  }
+})();
+
 // Baileys is ESM-only in current releases.  Keep this bridge CommonJS for its
 // existing Express setup, then load Baileys with dynamic import before opening
 // the server.  `require()` crashes the entire Render sidecar with ERR_REQUIRE_ESM.

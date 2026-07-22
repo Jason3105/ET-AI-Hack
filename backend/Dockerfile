@@ -8,11 +8,9 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PORT=10000 WHATSAPP_BRIDGE_URL=http://localhost:3001
 WORKDIR /app
 
-# Node is needed only for the existing Baileys WhatsApp sidecar. No FFmpeg,
-# Tesseract, TensorFlow, PyTorch, OpenCV, or model-download build stage remains.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Baileys needs Node 19+ (global Web Crypto). Do not use Debian apt `nodejs`
+# (Node 18 on bookworm) — copy the Node 20 binary from the builder image.
+COPY --from=node-builder /usr/local/bin/node /usr/local/bin/node
 
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
