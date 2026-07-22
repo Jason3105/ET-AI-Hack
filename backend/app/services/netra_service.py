@@ -379,12 +379,38 @@ def _extract_denomination_numeral_ocr(img_bgr: Any) -> str | None:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CV-based specimen detection (Stage 0a) — does NOT rely on OCR text
+# Fast specimen detection (Stage 0a) — targeted OCR plus CV signals
 # ═════════════════════════════════════════════════════════════════════════════
+
+def _read_vertical_specimen_stamp(img_bgr: Any) -> str:
+    """Read a central vertical overprint such as ``SPECIMEN`` quickly.
+
+    RBI specimen notes commonly print this label vertically over Gandhi's
+    portrait.  Full-page OCR can miss it entirely, particularly on a phone
+    photograph, because Tesseract assumes horizontal text.  Rotating only the
+    narrow centre strip is both faster and substantially more reliable.
+    """
+    if not (_CV2_AVAILABLE and _TESSERACT_AVAILABLE and _pytesseract_mod):
+        return ""
+    h, w = img_bgr.shape[:2]
+    strip = img_bgr[int(h * 0.12): int(h * 0.88), int(w * 0.34): int(w * 0.66)]
+    if strip.size == 0:
+        return ""
+    readings: list[str] = []
+    for direction in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+        rotated = cv2.rotate(strip, direction)
+        gray = cv2.cvtColor(rotated, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        readings.append(_tess_read(binary, "--psm 6 --oem 3"))
+    return " ".join(readings)
 
 def _detect_specimen_cv(img_bgr: Any) -> tuple[bool, str, float]:
     """
-    Detect specimen notes using pure OpenCV — catches cases where OCR fails.
+    Detect specimen notes before the general banknote gate.
+
+    A small, rotated OCR pass reads the high-signal vertical ``SPECIMEN``
+    overprint; CV signals remain as a fallback for cases where that text is
+    blurred or absent.
 
     Three independent CV signals:
 
@@ -411,6 +437,10 @@ def _detect_specimen_cv(img_bgr: Any) -> tuple[bool, str, float]:
     """
     if not _CV2_AVAILABLE or img_bgr is None:
         return False, "", 0.0
+
+    vertical_text = re.sub(r"\s+", "", _read_vertical_specimen_stamp(img_bgr))
+    if "SPECIMEN" in vertical_text or "SPECIM" in vertical_text:
+        return True, "Vertical SPECIMEN overprint detected", 99.5
 
     h, w = img_bgr.shape[:2]
 
@@ -652,9 +682,9 @@ def _ocr_prescan(img_bgr: Any) -> tuple[bool, str, float, str]:
     cv_fake, cv_reason, cv_conf = _detect_specimen_cv(img_bgr)
     if cv_fake:
         logger.info("CV specimen gate triggered: %s", cv_reason)
-        # Still run OCR so we have text for downstream stages
-        full_text = _ocr_full_image(img_bgr)
-        return True, cv_reason, cv_conf, full_text
+        # The specimen verdict is already definitive; avoid a slow full-page
+        # OCR pass that cannot change it.
+        return True, cv_reason, cv_conf, ""
 
     # ── OCR (Stage 0b) ────────────────────────────────────────────────────────
     full_text    = _ocr_full_image(img_bgr)
@@ -1537,13 +1567,23 @@ def scan_currency_image(image_bytes: bytes, denomination_hint: str | None = None
         note_score, note_signals = _validate_is_banknote(img_bgr, ocr_text, _TESSERACT_AVAILABLE)
         logger.info("Banknote score=%.1f signals=%s", note_score, note_signals)
         if note_score < _BANKNOTE_MIN_SCORE:
-            raise NotABanknoteError(
-                "The uploaded image does not appear to be an Indian currency note. "
-                "Please upload a clear, well-lit photo of a single banknote "
-                "(Rs.10 / Rs.20 / Rs.50 / Rs.100 / Rs.200 / Rs.500 / Rs.2000) filling most of the "
-                "frame, front side facing the camera. "
-                "Avoid screenshots, printed images, other objects, or blurry/cropped photos."
-            )
+            # A chosen denomination is useful evidence, but never enough on its
+            # own to accept a random image.  It may, however, keep a plausible
+            # banknote photograph in the analysis pipeline when brief OCR misses
+            # its text (as happens with intentionally defaced specimen notes).
+            valid_hint = denomination_hint in _SUPPORTED_DENOMS
+            h_px, w_px = img_bgr.shape[:2]
+            aspect_ratio = w_px / max(h_px, 1)
+            if valid_hint and note_score >= 20.0 and 1.25 <= aspect_ratio <= 3.25:
+                logger.info("Continuing low-OCR banknote candidate with denomination hint %s", denomination_hint)
+            else:
+                raise NotABanknoteError(
+                    "The uploaded image does not appear to be an Indian currency note. "
+                    "Please upload a clear, well-lit photo of a single banknote "
+                    "(Rs.10 / Rs.20 / Rs.50 / Rs.100 / Rs.200 / Rs.500 / Rs.2000) filling most of the "
+                    "frame, front side facing the camera. "
+                    "Avoid screenshots, printed images, other objects, or blurry/cropped photos."
+                )
     else:
         note_score = 100.0
 
@@ -1589,7 +1629,11 @@ def scan_currency_image(image_bytes: bytes, denomination_hint: str | None = None
         result["ml_classifier"] = inference["model"]
         result["counterfeit_probability"] = inference["counterfeitProbability"]
         model_verdict = inference["verdict"]
-        if model_verdict != result["verdict"]:
+        # A visible SPECIMEN overprint or specimen serial is direct physical
+        # evidence.  A statistical classifier must not downgrade that finding.
+        if ocr_is_fake:
+            result["model_disagreement"] = model_verdict != result["verdict"]
+        elif model_verdict != result["verdict"]:
             result["verdict"] = "SUSPICIOUS"
             result["requires_manual_security_feature_review"] = True
             result["model_disagreement"] = True
