@@ -30,14 +30,14 @@ _MAX_IMAGE_BYTES = 15 * 1024 * 1024
 _scan_store: dict[str, dict[str, Any]] = {}
 _scan_order: list[str] = []
 
-_SYSTEM_PROMPT = """You are NETRA, an assistive Indian banknote visual-review system.
+_ANALYSIS_INSTRUCTIONS = """You are NETRA, an assistive Indian banknote visual-review system.
 Review the supplied image only. You cannot authenticate currency or replace a bank,
 RBI, or trained examiner. Do not claim certainty where image quality or visibility
 is insufficient. Treat a clear 'SPECIMEN', a specimen serial, or obvious printed
 copy as counterfeit/training material; otherwise use SUSPICIOUS rather than
 COUNTERFEIT when evidence is inconclusive.
 
-Return ONLY JSON with exactly this shape:
+Return ONLY a JSON object with exactly this shape:
 {
   "is_indian_banknote": true,
   "verdict": "AUTHENTIC|SUSPICIOUS|COUNTERFEIT",
@@ -63,6 +63,61 @@ def _get_client():
         return Groq(api_key=settings.groq_api_key)
     except ImportError as exc:
         raise RuntimeError("Groq SDK is not installed") from exc
+
+
+def _is_json_validate_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "json_validate_failed" in message or "failed to validate json" in message
+
+
+def _groq_vision_completion(image_url: str, hint: str, *, use_json_mode: bool):
+    """Call Groq vision with Qwen-compatible settings.
+
+    ``qwen/qwen3.6-27b`` is a reasoning model.  Groq docs advise putting
+    instructions in the user message (not a system prompt) and pairing JSON
+    mode with ``reasoning_format`` / ``reasoning_effort`` so thinking tokens do
+    not consume the completion budget and leave an empty JSON body.
+    """
+    user_text = (
+        f"{_ANALYSIS_INSTRUCTIONS}\n\n"
+        f"Optional user denomination hint: {hint}. Analyse this image and "
+        "respond with the JSON object only."
+    )
+    kwargs: dict[str, Any] = {
+        "model": settings.groq_vision_model,
+        "temperature": 0.1,
+        "max_completion_tokens": min(settings.groq_max_tokens, 1600),
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ],
+        # Keep reasoning cheap so JSON mode has tokens left for the payload.
+        "reasoning_effort": "none",
+        "reasoning_format": "hidden",
+    }
+    if use_json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    client = _get_client()
+    try:
+        return client.chat.completions.create(**kwargs)
+    except TypeError:
+        # Older groq SDKs may reject reasoning_* kwargs.
+        kwargs.pop("reasoning_effort", None)
+        kwargs.pop("reasoning_format", None)
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # API may reject reasoning params on older deployments; retry bare call.
+        err = str(exc).lower()
+        if "reasoning" not in err:
+            raise
+        kwargs.pop("reasoning_effort", None)
+        kwargs.pop("reasoning_format", None)
+        return client.chat.completions.create(**kwargs)
 
 
 def _image_data_url(image_bytes: bytes) -> str:
@@ -94,8 +149,10 @@ def _image_data_url(image_bytes: bytes) -> str:
 
 def _json_object(raw: str) -> dict[str, Any]:
     text = raw.strip()
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I)
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
     text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
@@ -164,19 +221,15 @@ def scan_currency_image(image_bytes: bytes, denomination_hint: str | None = None
     started = time.perf_counter()
     image_url = _image_data_url(image_bytes)
     hint = denomination_hint if denomination_hint in _SUPPORTED_DENOMS else "none"
-    completion = _get_client().chat.completions.create(
-        model=settings.groq_vision_model,
-        temperature=0.1,
-        max_tokens=min(settings.groq_max_tokens, 1200),
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "text", "text": f"Optional user denomination hint: {hint}. Analyse this image."},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ]},
-        ],
-    )
+    try:
+        completion = _groq_vision_completion(image_url, hint, use_json_mode=True)
+    except Exception as exc:
+        # Qwen JSON mode can return an empty body when reasoning eats the budget;
+        # retry once without response_format and parse the free-form reply.
+        if not _is_json_validate_error(exc):
+            raise
+        logger.warning("NETRA JSON mode failed (%s); retrying without response_format", exc)
+        completion = _groq_vision_completion(image_url, hint, use_json_mode=False)
     raw = completion.choices[0].message.content or "{}"
     review = _json_object(raw)
     if not bool(review.get("is_indian_banknote", False)):
