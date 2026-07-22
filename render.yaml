@@ -10,8 +10,6 @@ services:
     envVars:
       - key: WHATSAPP_BRIDGE_URL
         value: http://localhost:3001
-      - key: SENTINEL_WHISPER_MODEL
-        value: tiny
       - key: FASTAPI_DEBUG
         value: false
       # ── Set these in the Render dashboard (Secrets) ──
@@ -28,10 +26,6 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: NUMVERIFY_API_KEY
-        sync: false
-      - key: UPSTASH_VECTOR_REST_URL
-        sync: false
-      - key: UPSTASH_VECTOR_REST_TOKEN
         sync: false
       - key: FASTAPI_SECRET_KEY
         generateValue: true

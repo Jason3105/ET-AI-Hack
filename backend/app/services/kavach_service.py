@@ -1,146 +1,113 @@
-"""KAVACH — RAG-powered citizen fraud shield service.
+"""KAVACH — direct Groq-powered citizen fraud assistant.
 
-Replaces the rule-based mock with a full Retrieval-Augmented Generation
-pipeline: Upstash Vector DB for semantic search + Groq LLM for response.
-Falls back to rule-based responses if the RAG system is unavailable.
+There is intentionally no embedding model, vector database, scraper or RAG
+initialisation here.  Groq handles multilingual conversation directly, while a
+small local emergency fallback remains available if the API is unavailable.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections import defaultdict
+from typing import Any
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# RAG chat (primary path)
-# ---------------------------------------------------------------------------
 
 SUPPORTED_LANGUAGES = {
     "en": "English", "hi": "Hindi", "bn": "Bengali", "te": "Telugu", "mr": "Marathi", "ta": "Tamil",
     "gu": "Gujarati", "ur": "Urdu", "kn": "Kannada", "or": "Odia", "ml": "Malayalam", "pa": "Punjabi",
 }
+_sessions: dict[str, list[dict[str, str]]] = defaultdict(list)
+_SYSTEM_PROMPT = """You are KAVACH (कवच), RAKSHA AI's Indian citizen fraud-safety assistant.
+Give practical, calm, safety-first advice about cyber fraud, suspicious calls,
+UPI, OTPs, digital-arrest scams, and fake currency. Never ask for an OTP, PIN,
+password, Aadhaar, PAN, bank details, or money. Do not present yourself as a
+government authority or claim to have contacted a bank or police.
 
-_EMERGENCY_ADVISORIES = {
-    "en": "Digital arrest is a scam. Do not transfer money or share OTP/PIN. End the call, tell a trusted person, and call 1930 immediately.",
-    "hi": "डिजिटल अरेस्ट एक ठगी है। पैसे ट्रांसफर न करें और OTP/PIN साझा न करें। कॉल बंद करें, किसी भरोसेमंद व्यक्ति को बताएं और तुरंत 1930 पर कॉल करें।",
-    "bn": "ডিজিটাল অ্যারেস্ট একটি প্রতারণা। টাকা পাঠাবেন না বা OTP/PIN দেবেন না। কলটি বন্ধ করে বিশ্বস্ত কাউকে জানান এবং সঙ্গে সঙ্গে 1930-এ ফোন করুন।",
-    "te": "డిజిటల్ అరెస్ట్ మోసం. డబ్బు బదిలీ చేయవద్దు, OTP/PIN పంచుకోవద్దు. కాల్‌ను ముగించి, నమ్మకమైన వ్యక్తికి చెప్పి వెంటనే 1930కు కాల్ చేయండి.",
-    "mr": "डिजिटल अरेस्ट ही फसवणूक आहे. पैसे पाठवू नका किंवा OTP/PIN देऊ नका. कॉल बंद करा, विश्वासू व्यक्तीला सांगा आणि त्वरित 1930 वर कॉल करा.",
-    "ta": "டிஜிட்டல் கைது ஒரு மோசடி. பணம் அனுப்பவோ OTP/PIN பகிரவோ வேண்டாம். அழைப்பை முடித்து, நம்பகமான ஒருவரிடம் தெரிவித்து உடனே 1930-ஐ அழைக்கவும்.",
-    "gu": "ડિજિટલ અરેસ્ટ એક છેતરપિંડી છે. પૈસા ટ્રાન્સફર ન કરો કે OTP/PIN શેર ન કરો. કૉલ બંધ કરો, વિશ્વાસુ વ્યક્તિને જણાવો અને તરત 1930 પર કૉલ કરો.",
-    "ur": "ڈیجیٹل گرفتاری ایک فراڈ ہے۔ رقم منتقل نہ کریں اور OTP/PIN شیئر نہ کریں۔ کال ختم کریں، کسی قابلِ اعتماد شخص کو بتائیں اور فوراً 1930 پر کال کریں۔",
-    "kn": "ಡಿಜಿಟಲ್ ಅರೆಸ್ಟ್ ವಂಚನೆ. ಹಣ ವರ್ಗಾಯಿಸಬೇಡಿ ಅಥವಾ OTP/PIN ಹಂಚಿಕೊಳ್ಳಬೇಡಿ. ಕರೆಯನ್ನು ಕೊನೆಗೊಳಿಸಿ, ನಂಬಿಕೆಯ ವ್ಯಕ್ತಿಗೆ ತಿಳಿಸಿ ಮತ್ತು ತಕ್ಷಣ 1930 ಗೆ ಕರೆ ಮಾಡಿ.",
-    "or": "ଡିଜିଟାଲ ଗିରଫ ଏକ ଠକେଇ। ଟଙ୍କା ପଠାନ୍ତୁ ନାହିଁ କିମ୍ବା OTP/PIN ଦିଅନ୍ତୁ ନାହିଁ। କଲ ବନ୍ଦ କରନ୍ତୁ, ବିଶ୍ୱସ୍ତ ଲୋକଙ୍କୁ କୁହନ୍ତୁ ଏବଂ ତୁରନ୍ତ 1930 କଲ କରନ୍ତୁ।",
-    "ml": "ഡിജിറ്റൽ അറസ്റ്റ് ഒരു തട്ടിപ്പാണ്. പണം അയക്കരുത്, OTP/PIN പങ്കിടരുത്. കോൾ അവസാനിപ്പിച്ച് വിശ്വസ്തരായ ഒരാളെ അറിയിച്ച് ഉടൻ 1930-ൽ വിളിക്കുക.",
-    "pa": "ਡਿਜ਼ਿਟਲ ਗ੍ਰਿਫ਼ਤਾਰੀ ਧੋਖਾਧੜੀ ਹੈ। ਪੈਸੇ ਟ੍ਰਾਂਸਫਰ ਨਾ ਕਰੋ ਅਤੇ OTP/PIN ਸਾਂਝਾ ਨਾ ਕਰੋ। ਕਾਲ ਬੰਦ ਕਰੋ, ਕਿਸੇ ਭਰੋਸੇਯੋਗ ਵਿਅਕਤੀ ਨੂੰ ਦੱਸੋ ਅਤੇ ਤੁਰੰਤ 1930 'ਤੇ ਕਾਲ ਕਰੋ।",
-}
+If money was sent or a digital-arrest/impersonation threat is active, clearly
+tell the user to stop contact and call 1930 immediately; they can also report at
+cybercrime.gov.in. Answer in the user's language when possible.
+
+Return only JSON:
+{"reply":"short helpful answer","intents":["UPI_FRAUD"],"quickActions":["Call 1930"],"riskLevel":"safe|warning|danger"}
+Use danger for immediate financial loss, OTP/PIN requests, threats or digital arrest.
+"""
 
 
-def reply(message: str, session_id: str | None = None, language: str = "auto") -> dict:
-    """Main chat handler — uses RAG pipeline when available."""
-    language = language.lower().strip()
-    # The RAG corpus is currently English/Hinglish.  For an explicitly chosen
-    # regional language, return the safety-first localised flow instead of
-    # pretending an English-only model has translated it reliably.
-    if language in SUPPORTED_LANGUAGES and language not in ("auto", "en"):
-        return _fallback_reply(message, language=language)
+def _get_client():
+    if not settings.groq_api_key:
+        return None
     try:
-        from app.services.kavach_rag import get_rag
-        rag = get_rag()
-        return rag.chat(user_message=message, session_id=session_id)
+        from groq import Groq
+        return Groq(api_key=settings.groq_api_key)
     except Exception as exc:
-        logger.warning("RAG pipeline unavailable (%s), using fallback", exc)
-        return _fallback_reply(message, language=language)
+        logger.warning("KAVACH could not initialise Groq: %s", exc)
+        return None
 
 
-# ---------------------------------------------------------------------------
-# Fallback rule-based handler
-# ---------------------------------------------------------------------------
-
-_INTENTS = {
-    "report_scam": ["report", "scam", "fraud", "cheated", "complaint"],
-    "check_number": ["number", "caller", "who called", "safe", "phone"],
-    "currency": ["fake", "currency", "note", "counterfeit", "cash", "ficn"],
-    "emergency": ["help", "urgent", "arrest", "threat", "digital arrest"],
-    "greeting": ["hi", "hello", "hey", "namaste"],
-}
-
-
-def _detect_intents(message: str) -> list[str]:
-    lowered = message.lower()
-    return [intent for intent, keys in _INTENTS.items() if any(k in lowered for k in keys)]
-
-
-def _fallback_reply(message: str, language: str = "auto") -> dict:
-    intents = _detect_intents(message)
-    if not intents:
-        intents = ["fallback"]
-
-    selected_language = language if language in SUPPORTED_LANGUAGES else "en"
-    if "emergency" in intents or (selected_language != "en" and any(token in message.lower() for token in ("arrest", "fraud", "scam", "otp", "upi"))):
-        text = (
-            _EMERGENCY_ADVISORIES[selected_language] + " "
-            + ("No government agency arrests anyone over a video call." if selected_language == "en" else "")
-        )
-        risk = "danger"
-        actions = ["Call 1930 Now", "File Complaint Online", "Report to Police"]
-    elif "report_scam" in intents:
-        text = (
-            "To report a cybercrime: Call 1930 (National Cyber Crime Helpline) or "
-            "visit cybercrime.gov.in. For financial fraud, report within the first hour "
-            "for the best chance of fund recovery."
-        )
+def _parse(raw: str) -> dict[str, Any]:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("invalid Groq response")
+        data = json.loads(text[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError("invalid Groq response")
+    risk = str(data.get("riskLevel", "warning")).lower()
+    if risk not in {"safe", "warning", "danger"}:
         risk = "warning"
-        actions = ["Call 1930", "File at cybercrime.gov.in", "Check Phone Number"]
-    elif "check_number" in intents:
-        text = (
-            "Share the phone number and I'll check it against known scam databases. "
-            "You can use the phone number checker in this app."
-        )
-        risk = "warning"
-        actions = ["Check a Number"]
-    elif "currency" in intents:
-        text = (
-            "Use RAKSHA AI's NETRA module to scan a currency note for authenticity. "
-            "Key checks: security thread, watermark, color-shifting ink, and raised "
-            "intaglio print. Fake notes should be handed to the nearest bank branch."
-        )
-        risk = "safe"
-        actions = ["Open NETRA Scanner"]
-    elif "greeting" in intents:
-        text = (
-            "Namaste! I'm KAVACH (कवच), your AI-powered fraud shield. I can help you "
-            "with: digital arrest scams, UPI fraud, fake currency, OTP theft, reporting "
-            "cybercrime, and more. What do you need help with?"
-        )
-        risk = "safe"
-        actions = ["Check a Number", "Report a Scam", "Learn About Scams"]
-    else:
-        text = (
-            "I'm here to help you stay safe from digital fraud. Ask me about "
-            "suspicious calls, UPI scams, digital arrest, fake currency, or how to "
-            "report cybercrime. Call 1930 for urgent help."
-        )
-        risk = "safe"
-        actions = ["Check a Number", "Report a Scam", "Call 1930"]
-
     return {
-        "reply": text,
-        "intents": intents,
-        "quickActions": actions,
-        "riskLevel": risk,
-        "sources": [],
-        "language": selected_language,
-        "supportedLanguages": SUPPORTED_LANGUAGES,
+        "reply": str(data.get("reply", "Please stay alert and call 1930 for urgent cyber-fraud help."))[:1600],
+        "intents": [str(value)[:48] for value in data.get("intents", []) if str(value).strip()][:6],
+        "quickActions": [str(value)[:80] for value in data.get("quickActions", []) if str(value).strip()][:4],
+        "riskLevel": risk, "sources": [], "provider": "Groq",
     }
 
 
-# ---------------------------------------------------------------------------
-# Number check
-# ---------------------------------------------------------------------------
+def _fallback_reply(message: str, language: str = "auto") -> dict[str, Any]:
+    lowered = message.lower()
+    urgent = any(token in lowered for token in ("otp", "pin", "digital arrest", "arrest", "transfer", "upi", "urgent", "threat"))
+    if urgent:
+        return {"reply": "Do not share OTP, PIN, passwords or send money. End contact with the caller and call 1930 immediately; report at cybercrime.gov.in.",
+                "intents": ["FRAUD_RISK"], "quickActions": ["Call 1930", "Report at cybercrime.gov.in"], "riskLevel": "danger", "sources": [], "provider": "local-safety-fallback"}
+    return {"reply": "I can help assess suspicious calls, messages, UPI requests, or fake-currency concerns. For urgent financial fraud, call 1930 immediately.",
+            "intents": ["GENERAL_SAFETY"], "quickActions": ["Call 1930", "Check a Number"], "riskLevel": "safe", "sources": [], "provider": "local-safety-fallback"}
 
-def check_number(phone: str) -> dict:
+
+def reply(message: str, session_id: str | None = None, language: str = "auto") -> dict[str, Any]:
+    client = _get_client()
+    if client is None:
+        return _fallback_reply(message, language)
+    session_key = session_id or "anonymous"
+    history = _sessions[session_key][-6:]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": _SYSTEM_PROMPT}, *history,
+                                      {"role": "user", "content": f"Preferred language: {language}.\nUser message: {message}"}]
+    try:
+        completion = client.chat.completions.create(
+            model=settings.groq_text_model, messages=messages, temperature=0.2,
+            max_tokens=min(settings.groq_max_tokens, 700), response_format={"type": "json_object"},
+        )
+        result = _parse(completion.choices[0].message.content or "{}")
+        _sessions[session_key].extend([{"role": "user", "content": message}, {"role": "assistant", "content": result["reply"]}])
+        _sessions[session_key] = _sessions[session_key][-8:]
+        return result
+    except Exception as exc:
+        logger.warning("KAVACH Groq request failed: %s", exc)
+        return _fallback_reply(message, language)
+
+
+def status() -> dict[str, Any]:
+    return {"status": "ready" if settings.groq_api_key else "missing_api_key", "provider": "Groq",
+            "model": settings.groq_text_model, "rag": False, "activeSessions": len(_sessions)}
+
+
+def check_number(phone: str) -> dict[str, Any]:
     digits = re.sub(r"\D", "", phone)
-    safe = not digits.startswith(("98765",))
+    safe = not digits.endswith(("9876543210", "9999999999"))
     return {"safe": safe, "risk_score": 0.15 if safe else 0.88}

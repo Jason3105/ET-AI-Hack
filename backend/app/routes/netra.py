@@ -30,32 +30,20 @@ router = APIRouter(prefix="/netra", tags=["netra"])
 
 @router.get("/model/status")
 def model_status():
-    """Return model-card status; ready means release gates passed."""
-    from app.services import netra_model_service
-
-    return ok(netra_model_service.status())
+    """Return the hosted Groq Vision readiness state."""
+    return ok(netra_service.model_status())
 
 
 @router.post("/model/train")
 def train_model(payload: NetraModelTrainRequest):
-    """Train from an approved server-side manifest, never arbitrary uploads."""
-    try:
-        from app.services import netra_model_service
-
-        return ok(netra_model_service.train(payload.datasetName, payload.modelName, payload.epochs, payload.learningRate))
-    except (ValueError, RuntimeError) as exc:
-        return fail(str(exc))
+    """Local model training was removed to keep the Render service lightweight."""
+    return fail("NETRA now uses Groq Vision. Local model training is not available in this deployment.")
 
 
 @router.post("/model/evaluate")
 def evaluate_model(payload: NetraModelEvaluateRequest):
-    """Report transparent labelled-data metrics for a registered model."""
-    try:
-        from app.services import netra_model_service
-
-        return ok(netra_model_service.evaluate(payload.datasetName))
-    except (ValueError, RuntimeError) as exc:
-        return fail(str(exc))
+    """Local model evaluation was removed with the local model runtime."""
+    return fail("NETRA now uses Groq Vision. Local model evaluation is not available in this deployment.")
 
 
 # ── POST /scan ────────────────────────────────────────────────────────────────

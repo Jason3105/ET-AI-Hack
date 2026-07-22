@@ -20,22 +20,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional dependency
 # ---------------------------------------------------------------------------
+try:
+    import numpy as np
+except ImportError:
+    np = None  # type: ignore[assignment]
+
 _LIBROSA_AVAILABLE = False
 try:
     import librosa  # type: ignore[import-untyped]
     import soundfile as sf  # type: ignore[import-untyped]
-    _LIBROSA_AVAILABLE = True
+    _LIBROSA_AVAILABLE = np is not None
 except ImportError:
     librosa = None  # type: ignore[assignment]
     sf = None
     logger.warning("librosa / soundfile not installed — voice analysis will be mocked")
+
+if not _LIBROSA_AVAILABLE:
+    logger.warning("NumPy/librosa unavailable — voice analysis will use lightweight fallback")
 
 
 # ---------------------------------------------------------------------------

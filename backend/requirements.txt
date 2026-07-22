@@ -1,12 +1,5 @@
-# RAKSHA AI — FastAPI Backend (deployment-optimised)
-# ─────────────────────────────────────────────────
-# Optimised for Render free tier (512 MB RAM).
-# Key changes vs local dev:
-#   • tensorflow-cpu  →  tflite-runtime  (~450 MB saved)
-#   • easyocr removed  (pytesseract only; ~1.5 GB saved)
-#   • PyTorch installed from CPU-only index (see Dockerfile)
-
-# Core API server + ASGI runtime
+# RAKSHA AI — lightweight Render runtime
+# Hosted Groq inference replaces local ML/CV/RAG stacks.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 websockets>=13.0
@@ -15,52 +8,10 @@ pydantic-settings==2.9.1
 python-multipart==0.0.20
 cryptography>=42.0.0
 
-# Image processing & CV
-opencv-python-headless==4.11.0.86
-Pillow>=10.4.0
-numpy>=1.26.0,<2.0.0
-
-# NETRA — TFLite runtime for CNN model inference (replaces tensorflow-cpu)
-# The .keras model is converted to .tflite at Docker build time.
-# For local dev with the .keras model, install tensorflow-cpu separately.
-tflite-runtime>=2.14.0; python_version < "3.12"
-
-# YOLOv12 (Ultralytics >= 8.3 supports YOLOv12)
-ultralytics>=8.3.0
-
-# Supabase
+# Application integrations
 supabase==2.15.0
 httpx==0.28.1
-
-# OCR — Tesseract only (EasyOCR removed to save ~1.5 GB)
-pytesseract>=0.3.10
-
-# SENTINEL — Speech-to-Text (Faster-Whisper)
-faster-whisper>=1.1.0
-
-# SENTINEL — NLP & Classification
-sentence-transformers>=3.0.0
-transformers>=4.40.0
-
-# SENTINEL — Voice Analysis
-librosa>=0.10.0
-soundfile>=0.12.0
-
-# SENTINEL — Audio utilities
-pydub>=0.25.0
-
-# SENTINEL — TTS for scenario audio generation
-gTTS>=2.5.0
-
-# WHATSAPP / KAVACH-WA — Groq AI SDK for chat analysis
 groq>=0.12.0
 
-# Phone Intelligence — web scraping for public number data
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
-
-# KAVACH RAG — Upstash Vector DB client
-upstash-vector>=0.5.0
-
-# Process manager (runs FastAPI + WhatsApp bridge in single container)
+# Runs the API and optional lightweight WhatsApp bridge sidecar.
 supervisor>=4.2.0

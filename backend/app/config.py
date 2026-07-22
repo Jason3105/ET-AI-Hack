@@ -66,14 +66,13 @@ class Settings(BaseSettings):
     agency_feed_max_event_age_seconds: int = 300
     agency_feed_db_path: str = "data_runtime/agency_feeds.sqlite3"
 
-    # NETRA model registry.  A model is usable only when its model card and
-    # hold-out metrics are present; no synthetic fallback verdict is allowed.
+    # NETRA uses Groq Vision rather than local TensorFlow, TFLite, OCR or YOLO.
+    # These legacy paths remain configurable only for backwards-compatible
+    # model-status endpoint inputs; they are not loaded by the running service.
     netra_model_dir: str = "data/netra/models"
     netra_dataset_dir: str = "data/netra/datasets"
     netra_min_validation_accuracy: float = 0.90
     netra_max_false_positive_rate: float = 0.05
-    # YOLO/PyTorch is optional enrichment.  The CV feature pipeline remains
-    # available without it and is the safe default for a 512 MB Render worker.
     netra_enable_yolo: bool = False
 
     # NumVerify — Phone number carrier & owner lookup (numverify.com)
@@ -83,30 +82,16 @@ class Settings(BaseSettings):
     # AbstractAPI — Phone validation fallback (abstractapi.com)
     abstract_phone_api_key: str = ""     # Free tier: 500 req/month
 
-    # Groq AI — LLM for WhatsApp chat analysis
+    # Groq AI — shared hosted inference for NETRA, KAVACH and WhatsApp analysis
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Kept as an alias for existing WhatsApp integrations.
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_text_model: str = "openai/gpt-oss-20b"
+    groq_vision_model: str = "qwen/qwen3.6-27b"
     groq_max_tokens: int = 2048
 
     # WhatsApp Bridge (Node.js sidecar)
     whatsapp_bridge_url: str = "http://localhost:3001"
-
-    # Upstash Vector DB — for KAVACH RAG knowledge base
-    upstash_vector_rest_url: str = ""
-    upstash_vector_rest_token: str = ""
-
-    @property
-    def upstash_vector_url(self) -> str:
-        return self.upstash_vector_rest_url
-
-    @property
-    def upstash_vector_token(self) -> str:
-        return self.upstash_vector_rest_token
-
-    # KAVACH RAG pipeline settings
-    kavach_embedding_model: str = "all-MiniLM-L6-v2"
-    kavach_top_k: int = 5
-    kavach_min_score: float = 0.01
 
     @property
     def cors_origin_list(self) -> list[str]:
