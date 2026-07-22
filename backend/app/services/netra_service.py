@@ -9,6 +9,7 @@ use case such as currency verification.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -71,12 +72,21 @@ def _image_data_url(image_bytes: bytes) -> str:
         raise ValueError("Image is too large. Upload an image smaller than 15 MB.")
     if image_bytes.startswith(b"\x89PNG"):
         mime = "image/png"
-    elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
-        mime = "image/webp"
-    elif image_bytes[:2] == b"BM":
-        mime = "image/bmp"
     elif image_bytes[:2] == b"\xff\xd8":
         mime = "image/jpeg"
+    elif (image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP") or image_bytes[:2] == b"BM":
+        # Groq's vision endpoint accepts JPEG/PNG reliably, while a browser can
+        # upload a WEBP (as in the NETRA UI) or BMP.  Convert only these edge
+        # formats with Pillow; this is a tiny image codec, not a model runtime.
+        try:
+            from PIL import Image
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            converted = io.BytesIO()
+            image.save(converted, format="JPEG", quality=92, optimize=True)
+            image_bytes = converted.getvalue()
+            mime = "image/jpeg"
+        except Exception as exc:
+            raise ValueError("This WEBP/BMP image could not be converted. Please upload a JPEG or PNG image.") from exc
     else:
         raise ValueError("Unsupported image. Upload a JPEG, PNG, WEBP, or BMP image.")
     return f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"

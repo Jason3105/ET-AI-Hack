@@ -5,18 +5,19 @@
  * Exposes REST API + WebSocket for the FastAPI backend.
  */
 
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  downloadMediaMessage,
-  getContentType,
-  isJidGroup,
-  isJidUser,
-  isJidBroadcast,
-  isJidNewsletter,
-} = require("@whiskeysockets/baileys");
+// Baileys is ESM-only in current releases.  Keep this bridge CommonJS for its
+// existing Express setup, then load Baileys with dynamic import before opening
+// the server.  `require()` crashes the entire Render sidecar with ERR_REQUIRE_ESM.
+let makeWASocket;
+let useMultiFileAuthState;
+let DisconnectReason;
+let fetchLatestBaileysVersion;
+let downloadMediaMessage;
+let getContentType;
+let isJidGroup;
+let isJidUser;
+let isJidBroadcast;
+let isJidNewsletter;
 const QRCode   = require("qrcode");
 const express  = require("express");
 const cors     = require("cors");
@@ -654,11 +655,34 @@ app.get("/debug", (_req, res) => {
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────
-server.listen(PORT, () => {
-  console.log(`\n🟢 WhatsApp Bridge running on http://localhost:${PORT}`);
-  console.log(`   Status:  GET  http://localhost:${PORT}/status`);
-  console.log(`   Chats:   GET  http://localhost:${PORT}/chats`);
-  console.log(`   Reset:   POST http://localhost:${PORT}/clear-session`);
-  console.log(`   Debug:   GET  http://localhost:${PORT}/debug\n`);
-  startWhatsApp();
-});
+async function boot() {
+  try {
+    const baileys = await import("@whiskeysockets/baileys");
+    ({
+      default: makeWASocket,
+      useMultiFileAuthState,
+      DisconnectReason,
+      fetchLatestBaileysVersion,
+      downloadMediaMessage,
+      getContentType,
+      isJidGroup,
+      isJidUser,
+      isJidBroadcast,
+      isJidNewsletter,
+    } = baileys);
+  } catch (error) {
+    console.error("[WA] Failed to load Baileys:", error);
+    process.exit(1);
+  }
+
+  server.listen(PORT, () => {
+    console.log(`\n🟢 WhatsApp Bridge running on http://localhost:${PORT}`);
+    console.log(`   Status:  GET  http://localhost:${PORT}/status`);
+    console.log(`   Chats:   GET  http://localhost:${PORT}/chats`);
+    console.log(`   Reset:   POST http://localhost:${PORT}/clear-session`);
+    console.log(`   Debug:   GET  http://localhost:${PORT}/debug\n`);
+    startWhatsApp();
+  });
+}
+
+boot();

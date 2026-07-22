@@ -76,9 +76,12 @@ async def scan_currency(
         )
     except ValueError as exc:
         return fail(str(exc))
-    except Exception:
+    except Exception as exc:
         logger.exception("Unexpected error during NETRA scan (file=%s)", file.filename)
-        return fail("Internal scan error — please try again with a valid image")
+        message = str(exc).strip()
+        if "invalid image data" in message.lower():
+            return fail("The image could not be read by NETRA. Try a clear JPEG or PNG image.")
+        return fail("NETRA vision analysis is temporarily unavailable. Please try again shortly.")
 
     if result.get("verdict") == "COUNTERFEIT":
         serial = (result.get("serial_number") or {}).get("extracted") or result.get("scan_id", "unknown-note")
